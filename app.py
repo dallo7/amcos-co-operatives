@@ -1,4 +1,3 @@
-
 import dash
 from dash import dcc, html, Input, Output, State, dash_table, callback_context, ALL
 import dash_bootstrap_components as dbc
@@ -12,11 +11,18 @@ import random
 import json
 import plotly.express as px
 
+# --- THIS CONSTANT HAS BEEN ADDED FOR THE PAYMENT ANIMATION ---
+PAYMENT_STEPS = [
+    "Initiating Capital Pay secure engine...",
+    "Pre-processing and validating farmer data...",
+    "Connecting to inter-bank payment gateway...",
+    "Securely settling respective farmers' accounts...",
+    "Transactions successful! Finalizing report..."
+]
+
 # Initialize Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
-app.title = "Farmers Payment Module"
-
-server = app.server
+app.title = "Farmers Payment Module - Simplified Payment System"
 
 
 # --- Database Setup ---
@@ -171,7 +177,6 @@ def create_login_layout():
     ], fluid=True, className="bg-light")
 
 
-# --- THIS FUNCTION HAS BEEN UPDATED ---
 def create_cooperative_layout(session_data):
     return html.Div([
         dbc.NavbarSimple(brand=session_data.get('cooperative_name'),
@@ -298,7 +303,7 @@ def update_kpi_cards(session_data, ipn_data, submission_trigger):
         ])), width=6, lg=3, className="mb-3"),
         dbc.Col(dbc.Card(dbc.CardBody([
             html.H4(pending_submissions, className="card-title text-warning"),
-            html.P("Pending Submissions", className="card-text text-muted"),
+            html.P("Pending Payments", className="card-text text-muted"),
         ])), width=6, lg=3, className="mb-3"),
         dbc.Col(dbc.Card(dbc.CardBody([
             html.H4(coop_count, className="card-title"),
@@ -418,7 +423,7 @@ def render_admin_dashboard(session_data, ipn_data, submission_trigger):
     query = "SELECT b.id, u.cooperative_name, b.filename, b.record_count, b.total_amount FROM submission_batches b JOIN users u ON b.cooperative_id = u.id WHERE b.status = 'pending_approval' ORDER BY b.submission_timestamp DESC"
     batches_df = pd.read_sql_query(query, conn)
     conn.close()
-    if batches_df.empty: return dbc.Alert("No pending submissions found.", color="info", className="m-4")
+    if batches_df.empty: return dbc.Alert("No Pending Payments found.", color="info", className="m-4")
     cards = [dbc.Card([
         dbc.CardHeader(f"From: {row['cooperative_name']}"),
         dbc.CardBody([
@@ -430,7 +435,7 @@ def render_admin_dashboard(session_data, ipn_data, submission_trigger):
             dbc.Button("Pay Now", id={'type': 'pay-now-btn', 'index': row['id']}, color="success"),
         ], className="d-flex justify-content-between"))
     ], className="mb-3") for _, row in batches_df.iterrows()]
-    return [html.H3("Pending Submissions", className="mb-4")] + cards
+    return [html.H3("Pending Payments", className="mb-4")] + cards
 
 
 @app.callback(
@@ -502,56 +507,75 @@ def save_admin_note(n_clicks, notes):
 )
 def handle_payment_processing(pay_clicks, n_intervals, close_clicks, batch_id, session_data):
     ctx = callback_context
-    if not ctx.triggered: return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
-    triggered_id_str = ctx.triggered[0]['prop_id'];
+    if not ctx.triggered:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    triggered_id_str = ctx.triggered[0]['prop_id']
     triggered_value = ctx.triggered[0]['value']
+
     if 'pay-now-btn' in triggered_id_str and triggered_value is not None:
-        id_dict = json.loads(triggered_id_str.split('.')[0]);
+        id_dict = json.loads(triggered_id_str.split('.')[0])
         new_batch_id = id_dict['index']
-        animation_step = html.Div(
-            [html.Div("🔄", style={'fontSize': 50}), dbc.Progress(value=5), html.P("Initiating...")],
-            className="text-center")
+        # Initial step (index 0)
+        animation_step = html.Div([
+            html.Div("⚙️", style={'fontSize': 50}),
+            dbc.Progress(value=20, striped=True, animated=True, style={"height": "20px"}),
+            html.P(PAYMENT_STEPS[0], className="mt-2")
+        ], className="text-center")
         return True, False, animation_step, True, new_batch_id, dash.no_update
+
     elif 'payment-interval' in triggered_id_str and batch_id is not None:
+        # This block will be triggered for n_intervals = 1, 2, 3
         if n_intervals < 4:
-            progress = (n_intervals + 1) * 25
-            animation_step = html.Div(
-                [html.Div("🔄", style={'fontSize': 50}), dbc.Progress(value=progress, striped=True, animated=True),
-                 html.P("Processing...")], className="text-center")
+            # Use n_intervals (1, 2, 3) to index into PAYMENT_STEPS
+            step_index = n_intervals
+            progress = (step_index + 1) * 20  # Progresses to 40%, 60%, 80%
+            animation_step = html.Div([
+                html.Div("⚙️", style={'fontSize': 50}),
+                dbc.Progress(value=progress, striped=True, animated=True, style={"height": "20px"}),
+                html.P(PAYMENT_STEPS[step_index], className="mt-2")
+            ], className="text-center")
             return True, False, animation_step, True, batch_id, dash.no_update
         else:
-            conn = sqlite3.connect('farmers_payment_module.db');
+            # This block is reached when n_intervals is 4, triggering final processing
+            conn = sqlite3.connect('farmers_payment_module.db')
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT u.cooperative_name, b.filename, b.record_count, b.total_amount FROM submission_batches b JOIN users u ON b.cooperative_id = u.id WHERE b.id = ?",
                 (batch_id,))
             batch_info = cursor.fetchone()
             cursor.execute("UPDATE submission_batches SET status = 'processed' WHERE id = ?", (batch_id,))
-            payments, success, failed = [], 0, 0;
+            payments, success, failed = [], 0, 0
             reasons = ["Invalid Account", "Bank Error", "Name Mismatch"]
             cursor.execute("SELECT id FROM farmer_payments WHERE batch_id = ?", (batch_id,))
             for (pid,) in cursor.fetchall():
                 if random.random() < 0.95:
-                    success += 1; payments.append(('paid', None, pid))
+                    success += 1
+                    payments.append(('paid', None, pid))
                 else:
-                    failed += 1; payments.append(('failed', random.choice(reasons), pid))
+                    failed += 1
+                    payments.append(('failed', random.choice(reasons), pid))
             cursor.executemany("UPDATE farmer_payments SET status = ?, failure_reason = ? WHERE id = ?", payments)
             if batch_info:
                 coop_name, filename, record_count, total_amount = batch_info
                 cursor.execute(
                     "INSERT INTO payment_history (batch_id, cooperative_name, filename, record_count, total_amount, processing_timestamp) VALUES (?, ?, ?, ?, ?, ?)",
                     (batch_id, coop_name, filename, record_count, total_amount, datetime.now()))
-            conn.commit();
+            conn.commit()
             conn.close()
             log_activity(session_data['id'], 'Payment Processed',
                          f"Processed '{batch_info[1]}' for {batch_info[0]}. Success: {success}, Failed: {failed}.")
             ipn = {'coop': batch_info[0], 'success': success, 'failed': failed, 'total': batch_info[2]}
-            result = html.Div(
-                [html.Div("✅", style={'fontSize': 60, 'color': 'green'}), dbc.Progress(value=100, color="success"),
-                 html.H5("Payment Processed!")], className="text-center")
+            # Final step display (index 4)
+            result = html.Div([
+                html.Div("✅", style={'fontSize': 60, 'color': 'green'}),
+                dbc.Progress(value=100, color="success", style={"height": "20px"}),
+                html.H5(PAYMENT_STEPS[4], className="mt-2")
+            ], className="text-center")
             return True, True, result, False, None, ipn
+
     elif 'payment-close-button' in triggered_id_str:
         return False, True, "", True, None, dash.no_update
+
     return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
 
@@ -685,6 +709,7 @@ def render_master_data_table(active_tab, ipn_data):
                                 style_data_conditional=style_data_conditional)
 
 
+# --- THIS CALLBACK HAS BEEN CORRECTED TO PREVENT THE KEYERROR ---
 @app.callback(Output("analytics-tab-content", "children"), Input("admin-tabs", "active_tab"),
               Input("ipn-data-store", "data"))
 def render_analytics_tab(active_tab, ipn_data):
@@ -696,10 +721,10 @@ def render_analytics_tab(active_tab, ipn_data):
     finally:
         conn.close()
     if df.empty: return dbc.Alert("No data available to generate analytics.", color="info")
-    df['date'] = pd.to_datetime(df['submission_timestamp']).dt.date;
+    df['date'] = pd.to_datetime(df['submission_timestamp']).dt.date
     df_paid = df[df['status'] == 'paid']
     bank_activity = df_paid.groupby('bank_name').agg(total_amount=('amount', 'sum'), account_holders=(
-    'farmer_name', 'nunique')).reset_index().sort_values('total_amount', ascending=False)
+        'farmer_name', 'nunique')).reset_index().sort_values('total_amount', ascending=False)
     coop_activity = df_paid.groupby('cooperative_name').agg(total_amount=('amount', 'sum'),
                                                             members=('farmer_name', 'nunique')).reset_index()
     farmer_activity = df_paid.groupby('farmer_name').agg(total_amount=('amount', 'sum'),
@@ -708,8 +733,10 @@ def render_analytics_tab(active_tab, ipn_data):
     top_farmers_busy = farmer_activity.sort_values('transaction_count', ascending=False).head(10)
     daily_trends = df_paid.groupby('date').agg(total_amount=('amount', 'sum'),
                                                unique_banks=('bank_name', 'nunique')).reset_index()
-    status_distribution = df.groupby(['date', 'status'])['status'].count().unstack(fill_value=0).reset_index();
-    status_distribution = pd.melt(status_distribution, id_vars=['date'], value_vars=['paid', 'failed'])
+
+    # FIX: Replaced the brittle unstack/melt combination with a robust groupby/size.
+    status_distribution = df.groupby(['date', 'status']).size().reset_index(name='value')
+
     fig_bank_amount = px.bar(bank_activity.head(10), x='bank_name', y='total_amount',
                              title='Top 10 Banks by Transaction Value',
                              labels={'bank_name': 'Bank', 'total_amount': 'Total Amount (TSH)'})
@@ -781,14 +808,14 @@ def render_cooperative_analytics(active_tab, session_data, alert_is_open):
     kpi_cards = dbc.Row([
         dbc.Col(dbc.Card(dbc.CardBody(
             [html.H4(f"TSH {total_submitted_amount:,.2f}"), html.P("Total Amount Submitted", className="text-muted")])),
-                md=3),
+            md=3),
         dbc.Col(dbc.Card(dbc.CardBody(
             [html.H4(f"TSH {total_paid_amount:,.2f}"), html.P("Total Amount Paid", className="text-muted")])), md=3),
         dbc.Col(dbc.Card(dbc.CardBody(
             [html.H4(f"{total_farmers_paid:,}"), html.P("Farmers Paid Successfully", className="text-muted")])), md=3),
         dbc.Col(dbc.Card(
             dbc.CardBody([html.H4(f"{success_rate:.2f}%"), html.P("Payment Success Rate", className="text-muted")])),
-                md=3),
+            md=3),
     ])
 
     # Calculations
@@ -803,7 +830,7 @@ def render_cooperative_analytics(active_tab, session_data, alert_is_open):
 
     # Figures
     fig_status = px.pie(status_counts, names='status', values='count', title='Payment Status Distribution',
-                        color='status', color_discrete_map={'paid': 'green', 'failed': 'red'})
+                        color='status', color_discrete_map={'paid': 'green', 'failed': 'red', 'pending': 'orange'})
     fig_banks = px.bar(bank_dist, x='bank_name', y='count', title='Top 10 Banks Used by Your Farmers')
     fig_daily = px.line(daily_submission_trend, x='date', y='amount', title='Your Daily Submission Value (TSH)',
                         markers=True)
@@ -834,6 +861,4 @@ def render_cooperative_analytics(active_tab, session_data, alert_is_open):
 # --- Run Application ---
 if __name__ == "__main__":
     init_db()
-
-    app.run(debug=True, port=8055)
-
+    app.run(debug=True, port=8075)
