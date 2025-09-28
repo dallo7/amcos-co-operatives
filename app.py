@@ -14,7 +14,7 @@ import plotly.express as px
 
 # Initialize Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
-app.title = "Farmers Payment Module - Simplified Payment System"
+app.title = "Farmers Payment Module"
 
 server = app.server
 
@@ -836,3 +836,4 @@ if __name__ == "__main__":
     init_db()
 
     app.run(debug=True, port=8055)
+
